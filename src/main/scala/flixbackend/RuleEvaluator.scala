@@ -1,16 +1,21 @@
 package flixbackend
 
+import scala.virtualization.lms.common._
+
 import Declarations._
 
-object RuleEvaluator {
-  type Rep[T] = T
+object RuleEvaluator extends RuleEvaluatorLike { type Rep[+T] = T }
+
+trait LMSRuleEvaluator extends RuleEvaluatorLike with ScalaOpsPkgExp
+
+trait RuleEvaluatorLike extends ScalaOpsPkg {
 
   sealed abstract class Binding
   case class LeqBinding(v: Rep[Value]) extends Binding
   case class ExactBinding(v: Rep[Value]) extends Binding
 
   def evalPattern(pattern: Pattern, valuation: PartialFunction[LocalVar, Rep[Value]]): Option[Rep[Value]] = pattern match {
-    case Constant(v, _) => Some(v)
+    case Constant(v, _) => Some(unit(v))
     case Variable(l: LocalVar) => valuation.lift(l)
     case TuplePattern(ps) =>
       val pvals = ps.map(evalPattern(_, valuation)).collect{case Some(v) => v}
