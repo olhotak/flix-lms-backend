@@ -41,7 +41,7 @@ class Solver(rules: List[Rule]) {
 
   def print(): Unit = globalEnv.keys.foreach{key =>
     println(key.show)
-    println(globalEnv(key).show)
+    println(key.tpe.show(globalEnv(key)))
     println("=" * 60)
   }
 }

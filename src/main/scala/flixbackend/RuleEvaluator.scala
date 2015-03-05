@@ -14,12 +14,15 @@ trait RuleEvaluatorLike extends ScalaOpsPkg {
   case class LeqBinding(v: Rep[Value]) extends Binding
   case class ExactBinding(v: Rep[Value]) extends Binding
 
+  implicit def callUnitImplicitly(v: Value): Rep[Value] = unit(v)
+
   def evalPattern(pattern: Pattern, valuation: PartialFunction[LocalVar, Rep[Value]]): Option[Rep[Value]] = pattern match {
-    case Constant(v, _) => Some(unit(v))
+    case Constant(v, _) => Some(v)
     case Variable(l: LocalVar) => valuation.lift(l)
     case TuplePattern(ps) =>
-      val pvals = ps.map(evalPattern(_, valuation)).collect{case Some(v) => v}
-      if(pvals.size == ps.size) Some(TupleValue(pvals)) else None
+      val pvalOpts = ps.map(evalPattern(_, valuation))
+      if(pvalOpts.exists(None == _)) None
+      else Some(TupleValue(pvalOpts.map(_.get)))
     case MapElem(key, value) =>
       for {
         keyVal <- evalPattern(key, valuation)
@@ -58,14 +61,16 @@ trait RuleEvaluatorLike extends ScalaOpsPkg {
               if(l.tpe.leq(existing, bound)) state.accept()
           }
         case TuplePattern(ps) =>
-          val elems = bound.asInstanceOf[TupleValue].elems
-          val newProcessors: List[State=>Unit] = (ps zip elems).map{ case (p, e) => acceptLeq(p)(e)(_) }
-          state.copy(processors = newProcessors ++ state.processors).accept()
+          val size = ps.size
+          val newProcessors = scala.Array.ofDim[State=>Unit](size)
+          for(i <- (0 until size): Range) {
+            newProcessors(i) = acceptLeq(ps(i))(asTupleElem(bound, i))
+          }
+          state.copy(processors = scala.List() ++ newProcessors ++ state.processors).accept()
         case MapElem(keyPattern, valuePattern) =>
-          val mapBound = bound.asInstanceOf[MapValue].map
           val keyVal = evalPattern(keyPattern, state.liftedValuation)
           def processKey(key: Rep[Value]) = {
-            mapBound.get(key) match {
+            asMapGetOption(bound, key) match {
               case Some(value) =>
                 val newProcessors: List[State=>Unit] =
                   (acceptExact(keyPattern)(key)(_)) ::
@@ -77,7 +82,7 @@ trait RuleEvaluatorLike extends ScalaOpsPkg {
           }
           keyVal match {
             case Some(key) => processKey(key)
-            case None =>  mapBound.keys.foreach(processKey(_))
+            case None => asMapKeys(bound).foreach(processKey(_))
           }
       }
     }
@@ -95,18 +100,26 @@ trait RuleEvaluatorLike extends ScalaOpsPkg {
               if(existing == other) state.accept()
           }
         case TuplePattern(ps) =>
-          val elems = other.asInstanceOf[TupleValue].elems
-          val newProcessors: List[State=>Unit] = (ps zip elems).map{ case (p, e) => acceptExact(p)(e)(_) }
-          state.copy(processors = newProcessors ++ state.processors).accept()
-        case MapElem(keyPattern, valuePattern) =>
-          val mapBound = other.asInstanceOf[MapValue].map
-          if(mapBound.size == 1) mapBound.keys.foreach{key =>
-            val newProcessors: List[State=>Unit] =
-              (acceptExact(keyPattern)(key)(_)) ::
-                (acceptExact(valuePattern)(mapBound(key))(_)) ::
-                state.processors
-            state.copy(processors = newProcessors).accept()
+          val size = ps.size
+          val newProcessors = scala.Array.ofDim[State=>Unit](size)
+          for(i <- (0 until size): Range) {
+            newProcessors(i) = acceptExact(ps(i))(asTupleElem(other, i))
           }
+          state.copy(processors = scala.List() ++ newProcessors ++ state.processors).accept()
+        case MapElem(keyPattern, valuePattern) =>
+          def processKey(key: Rep[Value]) = {
+            asMapGetOption(other, key) match {
+              case Some(value) =>
+                val newProcessors: List[State=>Unit] =
+                  (acceptExact(keyPattern)(key)(_)) ::
+                    (acceptLeq(valuePattern)(value)(_)) ::
+                    state.processors
+                state.copy(processors = newProcessors).accept()
+              case None =>
+            }
+          }
+          val keys = asMapKeys(other)
+          if(keys.size == 1) processKey(keys.head)
       }
     }
 
@@ -114,7 +127,7 @@ trait RuleEvaluatorLike extends ScalaOpsPkg {
 
     def updateOutputValue(state: State): Unit = {
       evalPattern(rule.head.pattern, state.liftedValuation) match {
-        case None => error(s"rule fails to bind all variables used in head ${rule}")
+        case None => errorAtStagingTime(s"rule fails to bind all variables used in head ${rule}")
         case Some(newValue) =>
           outputValue = rule.head.variable.tpe.join(outputValue, newValue)
       }
